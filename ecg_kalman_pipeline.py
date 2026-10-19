@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 import numpy as np
@@ -184,20 +185,39 @@ def extract_paired_features(
 def _require_wfdb() -> None:
     if wfdb is None:
         raise RuntimeError(
-            "A biblioteca 'wfdb' é necessária para carregar MIT-BIH/NSTDB. "
+            "A biblioteca 'wfdb' é necessária para carregar os arquivos locais MIT-BIH/NSTDB. "
             "Instale com: pip install wfdb"
         ) from WFDB_IMPORT_ERROR
 
 
-def load_physionet_record(database: str, record: str, channel: int = 0) -> tuple[np.ndarray, float]:
+def _resolve_record_base_path(data_dir: str, database: str, record: str) -> str:
+    base_dir = Path(data_dir)
+    candidates = [
+        base_dir / database / record,
+        base_dir / record,
+    ]
+
+    for candidate in candidates:
+        if candidate.with_suffix(".hea").exists():
+            return str(candidate)
+
+    raise FileNotFoundError(
+        f"Registro '{record}' não encontrado em '{base_dir / database}' nem em '{base_dir}'. "
+        f"Esperado arquivo .hea local."
+    )
+
+
+def load_physionet_record(data_dir: str, database: str, record: str, channel: int = 0) -> tuple[np.ndarray, float]:
     _require_wfdb()
-    signal, fields = wfdb.rdsamp(record_name=record, pn_dir=database)
+    record_path = _resolve_record_base_path(data_dir=data_dir, database=database, record=record)
+    signal, fields = wfdb.rdsamp(record_name=record_path)
     return signal[:, channel].astype(float), float(fields["fs"])
 
 
-def load_mitbih_annotations(record: str) -> tuple[np.ndarray, list[str]]:
+def load_mitbih_annotations(data_dir: str, record: str) -> tuple[np.ndarray, list[str]]:
     _require_wfdb()
-    annotation = wfdb.rdann(record_name=record, extension="atr", pn_dir="mitdb")
+    record_path = _resolve_record_base_path(data_dir=data_dir, database="mitdb", record=record)
+    annotation = wfdb.rdann(record_name=record_path, extension="atr")
     return np.asarray(annotation.sample, dtype=int), list(annotation.symbol)
 
 
@@ -250,7 +270,7 @@ def evaluate_models(
     return metrics
 
 
-def run_pipeline(records: list[str], noise_records: list[str], target_snr_db: float, seed: int) -> dict:
+def run_pipeline(records: list[str], noise_records: list[str], target_snr_db: float, seed: int, data_dir: str) -> dict:
     x_noisy_all = []
     x_filtered_all = []
     y_all = []
@@ -259,13 +279,13 @@ def run_pipeline(records: list[str], noise_records: list[str], target_snr_db: fl
     for idx, record in enumerate(records):
         noise_record = noise_records[idx % len(noise_records)]
 
-        clean, fs = load_physionet_record("mitdb", record)
-        noise, _ = load_physionet_record("nstdb", noise_record)
+        clean, fs = load_physionet_record(data_dir=data_dir, database="mitdb", record=record)
+        noise, _ = load_physionet_record(data_dir=data_dir, database="nstdb", record=noise_record)
 
         noisy = add_noise_at_target_snr(clean, noise, target_snr_db)
         filtered = kalman_filter_ecg(noisy)
 
-        ann_samples, ann_symbols = load_mitbih_annotations(record)
+        ann_samples, ann_symbols = load_mitbih_annotations(data_dir=data_dir, record=record)
 
         feats_noisy, feats_filtered, labels = extract_paired_features(
             noisy_signal=noisy,
@@ -325,53 +345,32 @@ def run_pipeline(records: list[str], noise_records: list[str], target_snr_db: fl
     }
 
 
-def run_synthetic_smoke(seed: int) -> dict:
-    rng = np.random.default_rng(seed)
-    n = 3000
-    t = np.linspace(0, 10, n)
-    clean = 0.15 * np.sin(2 * np.pi * 1.2 * t)
-    beat_pos = np.arange(180, n - 180, 120)
-    clean[beat_pos] += 1.2
-    clean[beat_pos + 3] -= 0.4
-
-    noise = rng.normal(0, 1.0, n)
-    noisy = add_noise_at_target_snr(clean, noise, target_snr_db=3.0)
-    filtered = kalman_filter_ecg(noisy)
-
-    ann_symbols = ["N" if (i % 5) else "V" for i in range(beat_pos.size)]
-    x_noisy, x_filtered, y = extract_paired_features(noisy, filtered, beat_pos, ann_symbols, fs=360)
-
-    return {
-        "snr_noisy_db": compute_snr_db(clean, noisy),
-        "snr_filtered_db": compute_snr_db(clean, filtered),
-        "classification": evaluate_models(x_noisy, x_filtered, y, random_state=seed),
-        "n_beats": int(y.size),
-    }
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--records", default="100,101,103", help="Registros MIT-BIH separados por vírgula")
+    parser.add_argument("--records", default="118,119", help="Registros MIT-BIH separados por vírgula")
     parser.add_argument("--noise-records", default="bw,ma,em", help="Registros NSTDB separados por vírgula")
     parser.add_argument("--target-snr-db", type=float, default=6.0, help="SNR alvo para contaminação do ECG")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--data-dir", default="./data", help="Diretório base local contendo mitdb/nstdb")
     parser.add_argument("--output-json", default="", help="Caminho opcional para salvar métricas em JSON")
-    parser.add_argument("--synthetic-smoke", action="store_true", help="Executa validação sem baixar dados")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
 
-    if args.synthetic_smoke:
-        results = run_synthetic_smoke(seed=args.seed)
-    else:
-        records = [rec.strip() for rec in args.records.split(",") if rec.strip()]
-        noise_records = [rec.strip() for rec in args.noise_records.split(",") if rec.strip()]
-        if not records or not noise_records:
-            raise ValueError("É necessário informar ao menos 1 registro MIT-BIH e 1 registro de ruído")
+    records = [rec.strip() for rec in args.records.split(",") if rec.strip()]
+    noise_records = [rec.strip() for rec in args.noise_records.split(",") if rec.strip()]
+    if not records or not noise_records:
+        raise ValueError("É necessário informar ao menos 1 registro MIT-BIH e 1 registro de ruído")
 
-        results = run_pipeline(records=records, noise_records=noise_records, target_snr_db=args.target_snr_db, seed=args.seed)
+    results = run_pipeline(
+        records=records,
+        noise_records=noise_records,
+        target_snr_db=args.target_snr_db,
+        seed=args.seed,
+        data_dir=args.data_dir,
+    )
 
     output = json.dumps(results, indent=2, ensure_ascii=False)
     print(output)
