@@ -192,18 +192,29 @@ def _require_wfdb() -> None:
 
 def _resolve_record_base_path(data_dir: str, database: str, record: str) -> str:
     base_dir = Path(data_dir)
-    candidates = [
-        base_dir / database / record,
-        base_dir / record,
+    search_roots = [
+        base_dir / database,
+        base_dir,
+        base_dir / "physionet.org" / "files" / database / "1.0.0",
+        base_dir / "physionet.org" / "files" / "nstdb" / "1.0.0",
+        base_dir / "files" / database / "1.0.0",
     ]
 
-    for candidate in candidates:
+    for root in search_roots:
+        candidate = root / record
         if candidate.with_suffix(".hea").exists():
             return str(candidate)
 
+    for root in search_roots:
+        if not root.exists():
+            continue
+        matches = sorted(root.rglob(f"{record}.hea"))
+        if matches:
+            return str(matches[0].with_suffix(""))
+
     raise FileNotFoundError(
-        f"Registro '{record}' não encontrado em '{base_dir / database}' nem em '{base_dir}'. "
-        f"Esperado arquivo .hea local."
+        f"Registro '{record}' não encontrado em '{base_dir}'. "
+        "Verifique se os arquivos .hea/.dat/.atr estão na árvore local de dados."
     )
 
 
@@ -347,11 +358,11 @@ def run_pipeline(records: list[str], noise_records: list[str], target_snr_db: fl
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--records", default="118,119", help="Registros MIT-BIH separados por vírgula")
+    parser.add_argument("--records", default="118e00,119e00", help="Registros MIT-BIH separados por vírgula")
     parser.add_argument("--noise-records", default="bw,ma,em", help="Registros NSTDB separados por vírgula")
     parser.add_argument("--target-snr-db", type=float, default=6.0, help="SNR alvo para contaminação do ECG")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--data-dir", default="./data", help="Diretório base local contendo mitdb/nstdb")
+    parser.add_argument("--data-dir", default="./data", help="Diretório base local contendo os arquivos PhysioNet")
     parser.add_argument("--output-json", default="", help="Caminho opcional para salvar métricas em JSON")
     return parser.parse_args()
 

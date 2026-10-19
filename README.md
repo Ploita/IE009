@@ -16,15 +16,17 @@ pip install numpy scikit-learn wfdb
 
 O script usa apenas dados locais em `./data` (sem download).  
 Ele procura os registros em:
-- `./data/mitdb/<registro>.{hea,dat,atr}` (ou `./data/<registro>.{hea,dat,atr}`)
-- `./data/nstdb/<registro>.{hea,dat}` (ou `./data/<registro>.{hea,dat}`)
+- `./data/mitdb/<registro>.{hea,dat,atr}`
+- `./data/nstdb/<registro>.{hea,dat}`
+- `./data/physionet.org/files/nstdb/1.0.0/<registro>.{hea,dat,atr}` (árvore mostrada no problema)
+- fallback recursivo dentro dessas raízes para localizar `<registro>.hea`
 
 ## Execução com base local (MIT-BIH + NSTDB)
 
 ```bash
 python ecg_kalman_pipeline.py \
   --data-dir ./data \
-  --records 118,119 \
+  --records 118e00,119e00 \
   --noise-records bw,ma,em \
   --target-snr-db 6 \
   --output-json resultados.json
